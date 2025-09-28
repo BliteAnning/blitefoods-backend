@@ -1,8 +1,9 @@
 import userModel from "../Models/userModel.js";
 import orderModel from "../Models/orderModel.js";
-import Stripe from 'stripe'
+import axios from "axios"
+//import Stripe from 'stripe'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+//const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
 
 //placing user order from  frontend
@@ -23,41 +24,34 @@ const placeOrder = async (req, res) =>{
         //clearing user's cartData
         await userModel.findByIdAndUpdate(req.body.userId, {cartData:{}})
 
+        let totalAmount = req.body.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+        totalAmount += 2; // Delivery charge
+
         //get the user item for the stripe payment
-        const line_items = req.body.items.map((item)=>({
-            price_data: {
-                currency:"usd",
-                product_data:{
-                    name: item.name
-                },
-                unit_amount: item.price*100
+        const paystackRes = await axios.post(
+            "https://api.paystack.co/transaction/initialize",
+            {
+                email: req.body.email, // Make sure email is sent from frontend
+                amount: totalAmount * 100, // Paystack expects amount in kobo
+                //reference: `order_${newOrder._id}`,
+                //callback_url: `${frontend_url}/verify?orderId=${newOrder._id}`
             },
-            quantity: item.quantity
-        }))
+            {
+                headers: {
+                    Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+                    "Content-Type": "application/json"
+                }
+            }
+        );
 
-        line_items.push({
-            price_data:{
-                currency: "usd",
-                product_data:{
-                    name: "Delivery Charges"
-                },
-                unit_amount:2*100
-            },
-            quantity:1
-        })
-
-        const session = await stripe.checkout.sessions.create({
-            line_items: line_items,
-            mode: 'payment',
-            success_url: `${frontend_url}/verify?success=true&orderId=${newOrder.id}`,
-            cancel_url: `${frontend_url}/verify?success=false&orderId=${newOrder.id}`
-        })
-        res.json({success: true, session_url:session.url})
-
+        if (paystackRes.data.status) {
+            res.json({ success: true, session_url: paystackRes.data.data.authorization_url });
+        } else {
+            res.json({ success: false, message: "Paystack initialization failed" });
+        }
     } catch (error) {
-        console.log(error);
-        res.json({success: false, message: "error"})
-        
+        console.log(error.response?.data || error);
+        res.json({ success: false, message: "error" });
     }
 }
 export  default placeOrder;
